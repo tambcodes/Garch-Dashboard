@@ -107,26 +107,27 @@ def main():
 
     tab1, tab2, tab3 = st.tabs(["📊 Return Distribution", "⚙️ EGARCH Model", "⬇️ Downloads"])
 
-    with tab1:
-        st.subheader("Return Distribution")
-        mu = rets["return"].mean()
-        sigma = rets["return"].std(ddof=1)
-        k = rets["return"].kurtosis()
-        s = rets["return"].skew()
+with tab1:
+    st.subheader("Return Distribution")
+    mu = rets["return"].mean() * 100       # now %
+    sigma = rets["return"].std(ddof=1) * 100
+    k = rets["return"].kurtosis()
+    s = rets["return"].skew()
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Mean", f"{mu:.6f}")
-        c2.metric("Std Dev", f"{sigma:.6f}")
-        c3.metric("Skew", f"{s:.3f}")
-        c4.metric("Excess Kurtosis", f"{k:.3f}")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Mean (%)", f"{mu:.4f}")
+    c2.metric("Std Dev (%)", f"{sigma:.4f}")
+    c3.metric("Skew", f"{s:.3f}")
+    c4.metric("Excess Kurtosis", f"{k:.3f}")
 
-        fig_hist = px.histogram(rets, x="return", nbins=bins, marginal="box", title="Return Histogram")
-        fig_hist.update_layout(bargap=0.05, height=500)
-        st.plotly_chart(fig_hist, use_container_width=True)
+    fig_hist = px.histogram(rets, x="return", nbins=bins, marginal="box", title="Return Histogram")
+    fig_hist.update_layout(bargap=0.05, height=500)
+    st.plotly_chart(fig_hist, use_container_width=True)
 
-        fig_line = px.line(rets, x=date_col, y="return", title="Time Series of Returns")
-        fig_line.update_layout(height=500)
-        st.plotly_chart(fig_line, use_container_width=True)
+    fig_line = px.line(rets, x=date_col, y="return", title="Time Series of Returns")
+    fig_line.update_layout(height=500)
+    st.plotly_chart(fig_line, use_container_width=True)
+
 
     with tab2:
         st.subheader("EGARCH Fit & Forecast")
