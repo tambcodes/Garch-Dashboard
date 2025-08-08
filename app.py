@@ -7,7 +7,7 @@ import plotly.express as px
 
 st.set_page_config(page_title="Return Distribution & EGARCH", layout="wide")
 
-# Try importing arch; if it fails, show a clear message and stop
+# Try importing arch; show message if missing
 try:
     from arch import arch_model
     ARCH_AVAILABLE = True
@@ -67,19 +67,16 @@ def main():
         o = st.number_input("o (Asymmetry)", min_value=0, max_value=5, value=1, step=1)
         q = st.number_input("q (ARCH)", min_value=1, max_value=5, value=1, step=1)
         horizon = st.slider("Forecast horizon (days)", 1, 60, 20)
-        # Keep simulations modest to avoid OOM on Cloud
         sims = st.slider("Simulation paths (if simulation is used)", 200, 3000, 500, 100)
         bins = st.slider("Histogram bins", 10, 200, 60)
         st.divider()
         st.caption("Note: EGARCH multi‑step forecasts require simulation; 1‑step can be analytic.")
 
-    # Guard: need arch
     if not ARCH_AVAILABLE:
         st.error("The `arch` package could not be imported. The app can’t run EGARCH without it.")
         st.exception(ARCH_IMPORT_ERROR)
         st.stop()
 
-    # Guard: need a file
     if uploaded is None:
         st.info("Upload a CSV in the sidebar to get started. 👈")
         st.stop()
@@ -105,37 +102,36 @@ def main():
         apply_usd, return_type
     )
 
+    # Tabs
     tab1, tab2, tab3 = st.tabs(["📊 Return Distribution", "⚙️ EGARCH Model", "⬇️ Downloads"])
 
-with tab1:
-    st.subheader("Return Distribution")
-    mu = rets["return"].mean() * 100       # now %
-    sigma = rets["return"].std(ddof=1) * 100
-    k = rets["return"].kurtosis()
-    s = rets["return"].skew()
+    with tab1:
+        st.subheader("Return Distribution")
+        # Show mean/std in PERCENT
+        mu_pct = rets["return"].mean() * 100.0
+        sigma_pct = rets["return"].std(ddof=1) * 100.0
+        k = rets["return"].kurtosis()
+        s = rets["return"].skew()
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Mean (%)", f"{mu:.4f}")
-    c2.metric("Std Dev (%)", f"{sigma:.4f}")
-    c3.metric("Skew", f"{s:.3f}")
-    c4.metric("Excess Kurtosis", f"{k:.3f}")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Mean (%)", f"{mu_pct:.4f}")
+        c2.metric("Std Dev (%)", f"{sigma_pct:.4f}")
+        c3.metric("Skew", f"{s:.3f}")
+        c4.metric("Excess Kurtosis", f"{k:.3f}")
 
-    fig_hist = px.histogram(rets, x="return", nbins=bins, marginal="box", title="Return Histogram")
-    fig_hist.update_layout(bargap=0.05, height=500)
-    st.plotly_chart(fig_hist, use_container_width=True)
+        fig_hist = px.histogram(rets, x="return", nbins=bins, marginal="box", title="Return Histogram")
+        fig_hist.update_layout(bargap=0.05, height=500)
+        st.plotly_chart(fig_hist, use_container_width=True)
 
-    fig_line = px.line(rets, x=date_col, y="return", title="Time Series of Returns")
-    fig_line.update_layout(height=500)
-    st.plotly_chart(fig_line, use_container_width=True)
-
+        fig_line = px.line(rets, x=date_col, y="return", title="Time Series of Returns")
+        fig_line.update_layout(height=500)
+        st.plotly_chart(fig_line, use_container_width=True)
 
     with tab2:
         st.subheader("EGARCH Fit & Forecast")
-
-        # Fit EGARCH on percent returns
         try:
             with st.spinner("Fitting EGARCH..."):
-                res = fit_egarch(rets["return"] * 100, dist=dist, p=p, o=o, q=q)
+                res = fit_egarch(rets["return"] * 100, dist=dist, p=p, o=o, q=q)  # percent units
         except Exception as e:
             st.error("EGARCH fitting failed.")
             st.exception(e)
@@ -148,9 +144,9 @@ with tab1:
             st.warning("Could not render summary.")
             st.exception(e)
 
-        # Conditional volatility plot
+        # Conditional volatility (percent)
         try:
-            cond_vol = res.conditional_volatility  # percent
+            cond_vol = res.conditional_volatility
             n = len(cond_vol)
             dates = rets[date_col].iloc[-n:].values
             vol_df = pd.DataFrame({date_col: dates, "cond_vol_%": np.asarray(cond_vol)})
@@ -161,7 +157,7 @@ with tab1:
             st.warning("Could not compute conditional volatility.")
             st.exception(e)
 
-        # Forecasts — use analytic only for 1-step; else simulation
+        # Forecasts — analytic for h=1, simulation for h>1
         try:
             if int(horizon) > 1:
                 f = res.forecast(
@@ -214,7 +210,7 @@ with tab1:
 
     st.success("Ready. Explore the tabs above for distribution, model fit, and downloads.")
 
-# Top-level catch to avoid the generic Streamlit error page
+# Never show the generic error page
 try:
     main()
 except Exception as e:
