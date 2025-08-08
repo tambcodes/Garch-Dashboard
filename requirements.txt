@@ -3,5 +3,5 @@ pandas==2.2.2
 numpy==1.26.4
 plotly==5.22.0
 arch>=6.4
-scipy==1.13.1
+scipy>=1.11,<1.13
 statsmodels==0.14.2
