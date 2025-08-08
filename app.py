@@ -1,4 +1,3 @@
-
 import io
 import numpy as np
 import pandas as pd
@@ -119,14 +118,25 @@ with tab2:
     fig_vol.update_layout(height=500)
     st.plotly_chart(fig_vol, use_container_width=True)
 
-    # Forecast
-    f = res.forecast(horizon=horizon, reindex=True)
+    # Forecast: handle multi-step horizon with simulation for EGARCH
+    if horizon > 1:
+        f = res.forecast(
+            horizon=horizon,
+            reindex=True,
+            method="simulation",   # simulation forecast instead of analytic
+            simulations=2000,
+            random_state=42
+        )
+    else:
+        f = res.forecast(horizon=horizon, reindex=True)
+
     # Extract variance forecasts of the last point
     try:
-        var_fc = f.variance.iloc[-1].values  # variance in percent^2
+        var_fc = f.variance.iloc[-1].to_numpy()
     except Exception:
-        var_fc = f.variance.values[-1] if hasattr(f.variance, "values") else np.array([])
+        var_fc = np.asarray(f.variance.values[-1]) if hasattr(f.variance, "values") else np.array([])
     vol_fc = np.sqrt(var_fc)  # percent
+
     fc_df = pd.DataFrame({"h": np.arange(1, len(vol_fc)+1), "vol_forecast_%": vol_fc})
     fig_fc = px.line(fc_df, x="h", y="vol_forecast_%", markers=True, title="Forecasted Volatility (next days, %)")
     fig_fc.update_layout(height=400)
