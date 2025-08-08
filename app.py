@@ -1,24 +1,30 @@
 import os
-import io
 import sys
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.express as px
-from arch import arch_model
 
 st.set_page_config(page_title="Return Distribution & EGARCH", layout="wide")
+
+# Try importing arch; if it fails, show a clear message and stop
+try:
+    from arch import arch_model
+    ARCH_AVAILABLE = True
+except Exception as e:
+    ARCH_AVAILABLE = False
+    ARCH_IMPORT_ERROR = e
 
 def env_panel():
     import platform
     try:
-        import scipy, statsmodels, plotly
-        import arch as arch_pkg
+        import scipy, statsmodels, plotly, numpy, pandas
         st.caption(
-            f"Env: py {platform.python_version()} | "
-            f"numpy {np.__version__} | pandas {pd.__version__} | "
+            "Env → "
+            f"py {platform.python_version()} | "
+            f"numpy {numpy.__version__} | pandas {pandas.__version__} | "
             f"scipy {scipy.__version__} | statsmodels {statsmodels.__version__} | "
-            f"arch {arch_pkg.__version__} | plotly {plotly.__version__}"
+            f"plotly {plotly.__version__}"
         )
     except Exception:
         pass
@@ -44,6 +50,7 @@ def main():
     st.title("📈 Return Distribution & EGARCH Dashboard")
     env_panel()
 
+    # Sidebar
     with st.sidebar:
         st.header("Upload & Settings")
         uploaded = st.file_uploader("Upload CSV", type=["csv"])
@@ -60,37 +67,43 @@ def main():
         o = st.number_input("o (Asymmetry)", min_value=0, max_value=5, value=1, step=1)
         q = st.number_input("q (ARCH)", min_value=1, max_value=5, value=1, step=1)
         horizon = st.slider("Forecast horizon (days)", 1, 60, 20)
-        forecast_method = st.selectbox(
-            "Forecast method",
-            ["auto (EGARCH→simulation if h>1)", "simulation", "analytic (1-step only)"],
-            index=0,
-        )
-        sims = st.slider("Simulation paths (if simulation)", 200, 5000, 2000, 100)
+        # Keep simulations modest to avoid OOM on Cloud
+        sims = st.slider("Simulation paths (if simulation is used)", 200, 3000, 500, 100)
         bins = st.slider("Histogram bins", 10, 200, 60)
         st.divider()
-        st.caption("Tip: Use the date range filter below the charts to zoom in.")
+        st.caption("Note: EGARCH multi‑step forecasts require simulation; 1‑step can be analytic.")
 
+    # Guard: need arch
+    if not ARCH_AVAILABLE:
+        st.error("The `arch` package could not be imported. The app can’t run EGARCH without it.")
+        st.exception(ARCH_IMPORT_ERROR)
+        st.stop()
+
+    # Guard: need a file
     if uploaded is None:
         st.info("Upload a CSV in the sidebar to get started. 👈")
-        return
+        st.stop()
 
-    # Read & validate
+    # Read CSV
     try:
         df = pd.read_csv(uploaded)
     except Exception as e:
         st.error("Could not read CSV.")
         st.exception(e)
-        return
+        st.stop()
 
+    # Validate columns
     for col in [date_col, price_col]:
         if col not in df.columns:
             st.error(f"Column '{col}' not found in CSV.")
-            return
+            st.stop()
 
-    # Returns
-    rets = compute_returns(df, date_col, price_col,
-                           usd_col if usd_col in df.columns else None,
-                           apply_usd, return_type)
+    # Compute returns
+    rets = compute_returns(
+        df, date_col, price_col,
+        usd_col if usd_col in df.columns else None,
+        apply_usd, return_type
+    )
 
     tab1, tab2, tab3 = st.tabs(["📊 Return Distribution", "⚙️ EGARCH Model", "⬇️ Downloads"])
 
@@ -118,14 +131,14 @@ def main():
     with tab2:
         st.subheader("EGARCH Fit & Forecast")
 
+        # Fit EGARCH on percent returns
         try:
             with st.spinner("Fitting EGARCH..."):
-                # Fit on percent units for interpretability
                 res = fit_egarch(rets["return"] * 100, dist=dist, p=p, o=o, q=q)
         except Exception as e:
             st.error("EGARCH fitting failed.")
             st.exception(e)
-            return
+            st.stop()
 
         st.write("**Model Summary**")
         try:
@@ -134,9 +147,9 @@ def main():
             st.warning("Could not render summary.")
             st.exception(e)
 
-        # Conditional volatility (percent)
+        # Conditional volatility plot
         try:
-            cond_vol = res.conditional_volatility
+            cond_vol = res.conditional_volatility  # percent
             n = len(cond_vol)
             dates = rets[date_col].iloc[-n:].values
             vol_df = pd.DataFrame({date_col: dates, "cond_vol_%": np.asarray(cond_vol)})
@@ -147,17 +160,9 @@ def main():
             st.warning("Could not compute conditional volatility.")
             st.exception(e)
 
-        # Forecasts
+        # Forecasts — use analytic only for 1-step; else simulation
         try:
-            method_choice = forecast_method
-            if method_choice.startswith("auto"):
-                use_sim = horizon > 1
-            elif method_choice == "simulation":
-                use_sim = True
-            else:
-                use_sim = False
-
-            if use_sim:
+            if int(horizon) > 1:
                 f = res.forecast(
                     horizon=int(horizon),
                     reindex=True,
@@ -165,22 +170,13 @@ def main():
                     simulations=int(sims),
                     random_state=42,
                 )
-                eff_h = horizon
             else:
-                eff_h = int(horizon)
-                if eff_h > 1:
-                    st.info("Analytic forecasts only support 1-step for EGARCH. Using horizon=1.")
-                    eff_h = 1
-                f = res.forecast(horizon=eff_h, reindex=True)
+                f = res.forecast(horizon=1, reindex=True)
 
             last = f.variance.iloc[-1]
-            # Make sure this is a flat numpy array
-            if hasattr(last, "to_numpy"):
-                var_fc = last.to_numpy().ravel()
-            else:
-                var_fc = np.asarray(last).ravel()
-
+            var_fc = last.to_numpy().ravel() if hasattr(last, "to_numpy") else np.asarray(last).ravel()
             vol_fc = np.sqrt(var_fc)  # percent
+
             fc_df = pd.DataFrame({"h": np.arange(1, len(vol_fc) + 1), "vol_forecast_%": vol_fc})
             fig_fc = px.line(fc_df, x="h", y="vol_forecast_%", markers=True,
                              title=f"Forecasted Volatility (next {len(vol_fc)} day(s), %)")
@@ -193,15 +189,15 @@ def main():
     with tab3:
         st.subheader("Downloads")
         try:
-            csv_rets = rets.to_csv(index=False).encode("utf-8")
-            st.download_button("Download Returns CSV", data=csv_rets, file_name="returns.csv", mime="text/csv")
+            st.download_button("Download Returns CSV",
+                               data=rets.to_csv(index=False).encode("utf-8"),
+                               file_name="returns.csv", mime="text/csv")
         except Exception:
             pass
         try:
-            cond_vol = res.conditional_volatility
-            vol_series = pd.DataFrame({"cond_vol_%": np.asarray(cond_vol)})
-            csv_vol = vol_series.to_csv(index=False).encode("utf-8")
-            st.download_button("Download Conditional Volatility CSV", data=csv_vol,
+            vol_series = pd.DataFrame({"cond_vol_%": np.asarray(res.conditional_volatility)})
+            st.download_button("Download Conditional Volatility CSV",
+                               data=vol_series.to_csv(index=False).encode("utf-8"),
                                file_name="conditional_volatility.csv", mime="text/csv")
         except Exception:
             pass
@@ -209,18 +205,18 @@ def main():
             params_df = res.params.to_frame(name="value")
             params_df["tval"] = res.tvalues
             params_df["pval"] = res.pvalues
-            csv_params = params_df.to_csv().encode("utf-8")
-            st.download_button("Download Model Parameters CSV", data=csv_params,
+            st.download_button("Download Model Parameters CSV",
+                               data=params_df.to_csv().encode("utf-8"),
                                file_name="egarch_params.csv", mime="text/csv")
         except Exception:
             pass
 
     st.success("Ready. Explore the tabs above for distribution, model fit, and downloads.")
 
-# Top-level catch so we never show the generic 'Oh no' page
+# Top-level catch to avoid the generic Streamlit error page
 try:
     main()
 except Exception as e:
-    st.error("A fatal error occurred in the app. Details below:")
+    st.error("A fatal error occurred before the app could render:")
     env_panel()
     st.exception(e)
